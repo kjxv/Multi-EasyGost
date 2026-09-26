@@ -2,10 +2,17 @@
 Green_font_prefix="\033[32m" && Red_font_prefix="\033[31m" && Green_background_prefix="\033[42;37m" && Font_color_suffix="\033[0m"
 Info="${Green_font_prefix}[信息]${Font_color_suffix}"
 Error="${Red_font_prefix}[错误]${Font_color_suffix}"
-shell_version="1.1.1"
+shell_version="1.1.2"
 ct_new_ver="2.11.2" # 2.x 不再跟随官方更新
 gost_conf_path="/etc/gost/config.json"
 raw_conf_path="/etc/gost/rawconf"
+# 独立维护仓库。需要迁移时可在运行脚本前通过同名环境变量覆盖。
+repo_owner="${GOST_REPO_OWNER:-kjxv}"
+repo_name="${GOST_REPO_NAME:-Multi-EasyGost}"
+repo_ref="${GOST_REPO_REF:-v2}"
+repo_url="https://github.com/${repo_owner}/${repo_name}"
+raw_base_url="https://raw.githubusercontent.com/${repo_owner}/${repo_name}/${repo_ref}"
+systemd_service_path="/usr/lib/systemd/system/gost.service"
 function checknew() {
   checknew=$(gost -V 2>&1 | awk '{print $2}')
   # check_new_ver
@@ -82,7 +89,7 @@ function check_nor_file() {
   rm -rf "$(pwd)"/gost.service
   rm -rf "$(pwd)"/config.json
   rm -rf /etc/gost
-  rm -rf /usr/lib/systemd/system/gost.service
+  rm -rf "$systemd_service_path"
   rm -rf /usr/bin/gost
 }
 function Install_ct() {
@@ -101,23 +108,34 @@ function Install_ct() {
     gunzip gost-linux-"$bit"-"$ct_new_ver".gz
     mv gost-linux-"$bit"-"$ct_new_ver" gost
     mv gost /usr/bin/gost
-    chmod -R 777 /usr/bin/gost
-    wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/gost.service && chmod -R 777 gost.service && mv gost.service /usr/lib/systemd/system
-    mkdir /etc/gost && wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/config.json && mv config.json /etc/gost && chmod -R 777 /etc/gost
+    chmod 755 /usr/bin/gost
   else
     rm -rf gost-linux-"$bit"-"$ct_new_ver".gz
     wget --no-check-certificate https://github.com/ginuerzh/gost/releases/download/v"$ct_new_ver"/gost-linux-"$bit"-"$ct_new_ver".gz
     gunzip gost-linux-"$bit"-"$ct_new_ver".gz
     mv gost-linux-"$bit"-"$ct_new_ver" gost
     mv gost /usr/bin/gost
-    chmod -R 777 /usr/bin/gost
-    wget --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.service && chmod -R 777 gost.service && mv gost.service /usr/lib/systemd/system
-    mkdir /etc/gost && wget --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/config.json && mv config.json /etc/gost && chmod -R 777 /etc/gost
+    chmod 755 /usr/bin/gost
   fi
 
+  # 服务文件和默认配置始终从当前维护仓库获取，避免依赖原作者仓库。
+  if ! wget --no-check-certificate -O gost.service "${raw_base_url}/gost.service"; then
+    echo -e "${Error} gost.service 下载失败：${raw_base_url}/gost.service"
+    return 1
+  fi
+  chmod 644 gost.service && mv gost.service "$systemd_service_path"
+  mkdir -p /etc/gost
+  if ! wget --no-check-certificate -O config.json "${raw_base_url}/config.json"; then
+    echo -e "${Error} config.json 下载失败：${raw_base_url}/config.json"
+    return 1
+  fi
+  chmod 600 config.json && mv config.json /etc/gost/config.json
+  chmod 755 /etc/gost
+
+  systemctl daemon-reload
   systemctl enable gost && systemctl restart gost
   echo "------------------------------"
-  if test -a /usr/bin/gost -a /usr/lib/systemctl/gost.service -a /etc/gost/config.json; then
+  if test -a /usr/bin/gost -a "$systemd_service_path" -a /etc/gost/config.json; then
     echo "gost安装成功"
     rm -rf "$(pwd)"/gost
     rm -rf "$(pwd)"/gost.service
@@ -132,7 +150,7 @@ function Install_ct() {
 }
 function Uninstall_ct() {
   rm -rf /usr/bin/gost
-  rm -rf /usr/lib/systemd/system/gost.service
+  rm -rf "$systemd_service_path"
   rm -rf /etc/gost
   rm -rf "$(pwd)"/gost.sh
   echo "gost已经成功删除"
@@ -296,7 +314,7 @@ function read_d_ip() {
     echo -e "------------------------------------------------------------------"
     echo -e "请问你要将本机从${flag_b}接收到的流量转发向哪个IP或域名?"
     echo -e "注: IP既可以是[远程机器/当前机器]的公网IP, 也可是以本机本地回环IP(即127.0.0.1)"
-    echo -e "具体IP地址的填写, 取决于接收该流量的服务正在监听的IP(详见: https://github.com/KANIKIG/Multi-EasyGost)"
+    echo -e "具体IP地址的填写, 取决于接收该流量的服务正在监听的IP(详见: ${repo_url})"
     if [[ ${is_cert} == [Yy] ]]; then
       echo -e "注意: 落地机开启自定义tls证书，务必填写${Red_font_prefix}域名${Font_color_suffix}"
     fi
@@ -349,7 +367,9 @@ function read_d_port() {
   fi
 }
 function writerawconf() {
-  echo $flag_a"/""$flag_b""#""$flag_c""#""$flag_d" >>$raw_conf_path
+  touch "$raw_conf_path"
+  chmod 600 "$raw_conf_path"
+  echo "$flag_a/$flag_b#$flag_c#$flag_d" >>"$raw_conf_path"
 }
 function rawconf() {
   read_protocol
@@ -367,6 +387,8 @@ function eachconf_retrieve() {
   is_encrypt=${flag_s_port%/*}
 }
 function confstart() {
+  touch "$gost_conf_path"
+  chmod 600 "$gost_conf_path"
   echo "{
     \"Debug\": true,
     \"Retries\": 0,
@@ -872,36 +894,55 @@ cron_restart() {
 }
 
 update_sh() {
-  ol_version=$(curl -L -s --connect-timeout 5 https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh | grep "shell_version=" | head -1 | awk -F '=|"' '{print $3}')
+  update_file="${0}.update"
+  if ! wget --no-check-certificate -qO "$update_file" -t2 -T5 "${raw_base_url}/gost.sh"; then
+    rm -f "$update_file"
+    echo -e "                 ${Red_font_prefix}脚本最新版本获取失败，请检查与 GitHub 的连接！${Font_color_suffix}"
+    return
+  fi
+  ol_version=$(grep "shell_version=" "$update_file" | head -1 | awk -F '=|"' '{print $3}')
   if [ -n "$ol_version" ]; then
-    if [[ "$shell_version" != "$ol_version" ]]; then
+    newest_version=$(printf '%s\n%s\n' "$shell_version" "$ol_version" | sort -V | tail -n 1)
+    if [[ "$shell_version" != "$ol_version" && "$newest_version" == "$ol_version" ]]; then
       echo -e "存在新版本，是否更新 [Y/N]?"
       read -r update_confirm
       case $update_confirm in
       [yY][eE][sS] | [yY])
-        wget -N --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh
-        echo -e "更新完成"
-        exit 0
+        chmod +x "$update_file"
+        if mv "$update_file" "$0"; then
+          echo -e "更新完成，请重新运行脚本"
+          exit 0
+        else
+          echo -e "${Error} 更新失败，无法覆盖当前脚本：$0"
+          rm -f "$update_file"
+          return 1
+        fi
         ;;
-      *) ;;
+      *) rm -f "$update_file" ;;
 
       esac
-    else
+    elif [[ "$shell_version" == "$ol_version" ]]; then
+      rm -f "$update_file"
       echo -e "                 ${Green_font_prefix}当前版本为最新版本！${Font_color_suffix}"
+    else
+      rm -f "$update_file"
+      echo -e "                 ${Green_font_prefix}当前本地版本高于仓库版本，跳过更新。${Font_color_suffix}"
     fi
   else
-    echo -e "                 ${Red_font_prefix}脚本最新版本获取失败，请检查与github的连接！${Font_color_suffix}"
+    rm -f "$update_file"
+    echo -e "                 ${Red_font_prefix}无法识别仓库中的脚本版本，已跳过更新。${Font_color_suffix}"
   fi
 }
 
 update_sh
 echo && echo -e "                 gost 一键安装配置脚本"${Red_font_prefix}[${shell_version}]${Font_color_suffix}"
-  ----------- KANIKIG -----------
+  ----------- ${repo_owner} 维护 -----------
+  原项目: https://github.com/KANIKIG/Multi-EasyGost
   特性: (1)本脚本采用systemd及gost配置文件对gost进行管理
         (2)能够在不借助其他工具(如screen)的情况下实现多条转发规则同时生效
         (3)机器reboot后转发不失效
   功能: (1)tcp+udp不加密转发, (2)中转机加密转发, (3)落地机解密对接转发
-  帮助文档：https://github.com/KANIKIG/Multi-EasyGost
+  帮助文档：${repo_url}
 
  ${Green_font_prefix}1.${Font_color_suffix} 安装 gost
  ${Green_font_prefix}2.${Font_color_suffix} 更新 gost
@@ -918,7 +959,7 @@ echo && echo -e "                 gost 一键安装配置脚本"${Red_font_prefi
  ${Green_font_prefix}10.${Font_color_suffix} gost定时重启配置
  ${Green_font_prefix}11.${Font_color_suffix} 自定义TLS证书配置
 ————————————" && echo
-read -e -p " 请输入数字 [1-9]:" num
+read -e -p " 请输入数字 [1-11]:" num
 case "$num" in
 1)
   Install_ct
@@ -974,6 +1015,6 @@ case "$num" in
   cert
   ;;
 *)
-  echo "请输入正确数字 [1-9]"
+  echo "请输入正确数字 [1-11]"
   ;;
 esac
